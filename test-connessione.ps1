@@ -65,28 +65,26 @@ try {
     $Collegato = $null
     $UltimoErrore = $null
     foreach ($p in $Porte) {
-        $csb = New-Object FirebirdSql.Data.FirebirdClient.FbConnectionStringBuilder
-        $csb.DataSource = 'localhost'
-        $csb.Port       = $p
-        $csb.Database   = $Archivio
-        $csb.UserID     = $Utente
-        $csb.Password   = $Password
-        $csb.Charset    = 'WIN1252'
-        $csb.Dialect    = 3
-        $csb.Pooling    = $false
-        $con = New-Object FirebirdSql.Data.FirebirdClient.FbConnection($csb.ToString())
-        try { $con.Open(); $Collegato = $con; $PortaOk = $p; break }
-        catch { $UltimoErrore = $_.Exception.Message; $con.Dispose() }
+        [string]$cs = "DataSource=localhost;Port=$([int]$p);Database=$Archivio;User=$Utente;Password=$Password;Charset=WIN1252;Dialect=3;Pooling=false"
+        try {
+            $con = [FirebirdSql.Data.FirebirdClient.FbConnection]::new($cs)
+            $con.Open(); $Collegato = $con; $PortaOk = $p; break
+        }
+        catch {
+            $UltimoErrore = "porta ${p}: " + $_.Exception.Message
+            Scrivi "    $UltimoErrore" 'Yellow'
+            if ($con) { $con.Dispose() }
+        }
     }
     if (-not $Collegato) { throw "Collegamento non riuscito. Ultimo errore: $UltimoErrore" }
     Scrivi "    OK, collegato sulla porta $PortaOk" 'Green'
 
-    $opz = New-Object FirebirdSql.Data.FirebirdClient.FbTransactionOptions
+    $opz = [FirebirdSql.Data.FirebirdClient.FbTransactionOptions]::new()
     $opz.TransactionBehavior = [FirebirdSql.Data.FirebirdClient.FbTransactionBehavior]'Read,ReadCommitted,RecVersion,NoWait'
     $tr = $Collegato.BeginTransaction($opz)
 
-    function Valore($sql) {
-        $cmd = New-Object FirebirdSql.Data.FirebirdClient.FbCommand($sql, $Collegato, $tr)
+    function Valore([string]$sql) {
+        $cmd = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($sql, $Collegato, $tr)
         try { return $cmd.ExecuteScalar() } finally { $cmd.Dispose() }
     }
 
@@ -111,6 +109,7 @@ catch {
     Scrivi ''
     Scrivi '=== ERRORE ===' 'Red'
     Scrivi $_.Exception.Message 'Red'
+    Scrivi ("Riga " + $_.InvocationInfo.ScriptLineNumber + ": " + $_.InvocationInfo.Line.Trim()) 'DarkGray'
     if ($_.Exception.Message -match 'password|user name') {
         Scrivi 'La password di Firebird non e quella standard: Danea l''ha cambiata.' 'Yellow'
     }
