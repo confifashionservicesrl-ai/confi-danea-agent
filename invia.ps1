@@ -28,7 +28,28 @@ try {
     $tr = Transazione-SolaLettura $con
 
     $nDoc = 0; $nScad = 0; $nAnag = 0
-    $documenti = Tabella-Json $con $tr 'select "IDDoc","TipoDoc","Data","NumDoc","IDAnagr","Anagr_Nome","TotNetto","TotIva","TotDoc","Pagam_ImportoDaSaldare","Pagam_Saldato" from "TDocTestate"' ([ref]$nDoc)
+    # anche le altre date dei documenti (per le fatture dei fornitori "Data" e' la data di registrazione:
+    # la data della fattura del fornitore e' in un'altra colonna) e gli altri numeri documento
+    $altre = @()
+    try {
+        $sqlCol = 'select trim(rf.RDB$FIELD_NAME), f.RDB$FIELD_TYPE from RDB$RELATION_FIELDS rf join RDB$FIELDS f on f.RDB$FIELD_NAME = rf.RDB$FIELD_SOURCE where rf.RDB$RELATION_NAME = ''TDocTestate'''
+        $cmdCol = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($sqlCol, $con, $tr)
+        $rc = $cmdCol.ExecuteReader()
+        while ($rc.Read()) {
+            $nome = [string]$rc.GetValue(0); $tipo = [int]$rc.GetValue(1)
+            if ($nome -in @('Data', 'NumDoc')) { continue }
+            if ($tipo -in @(12, 35) -or ($nome -match '^(Num|Rif)' -and $tipo -in @(14, 37))) { $altre += '"' + $nome + '"' }
+        }
+        $rc.Dispose(); $cmdCol.Dispose()
+    } catch { Registra "Avviso: colonne aggiuntive non lette ($($_.Exception.Message))" 'Yellow'; $altre = @() }
+    $extra = if ($altre.Count) { ',' + ($altre -join ',') } else { '' }
+    $base = 'select "IDDoc","TipoDoc","Data","NumDoc","IDAnagr","Anagr_Nome","TotNetto","TotIva","TotDoc","Pagam_ImportoDaSaldare","Pagam_Saldato"'
+    try { $documenti = Tabella-Json $con $tr ($base + $extra + ' from "TDocTestate"') ([ref]$nDoc) }
+    catch {
+        if (-not $extra) { throw }
+        Registra "Avviso: colonne aggiuntive non leggibili, invio senza ($($_.Exception.Message))" 'Yellow'
+        $documenti = Tabella-Json $con $tr ($base + ' from "TDocTestate"') ([ref]$nDoc)
+    }
     $scadenze  = Tabella-Json $con $tr 'select "IDPrimaNota","IDDoc","IDAnagr","DataScad","DataPagam","Importo","Saldato","Risorsa","CategPagamento" from "TPrimaNota"' ([ref]$nScad)
     $anagrafica = Tabella-Json $con $tr 'select "IDAnagr","CodAnagr","Nome","Cliente","Fornitore","Citta","Prov","Nazione","PartitaIva" from "TAnagrafica"' ([ref]$nAnag)
     $tr.Commit()
