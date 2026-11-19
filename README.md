@@ -4,7 +4,8 @@ Programma di **sola lettura** dell'archivio Danea Easyfatt di CON.FI FASHION SER
 
 Gira dentro il Windows dove si trova Danea, legge l'archivio tramite il Firebird di Danea con una
 transazione di sola lettura (non modifica nulla) e ogni 15 minuti manda una fotografia dei dati
-(testate dei documenti, scadenze, clienti/fornitori) al server privato CON.FI.
+(testate dei documenti, righe delle fatture e delle fatture dei fornitori dal 2025, scadenze,
+clienti/fornitori) al server privato CON.FI.
 
 Qui non ci sono dati aziendali né password: il codice di invio si scrive durante l'installazione
 e resta solo su quel PC (`C:\ProgramData\ConfiDanea\config.json`, leggibile solo dagli amministratori).
