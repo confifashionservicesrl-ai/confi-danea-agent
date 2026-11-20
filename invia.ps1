@@ -73,24 +73,25 @@ try {
         $righe = Tabella-Json $con $tr $sqlRighe ([ref]$nRighe)
     } catch { Registra "Avviso: righe dei documenti non lette ($($_.Exception.Message))" 'Yellow'; $righe = $null; $nRighe = 0 }
     # fatture elettroniche ricevute dai fornitori (dal 2026): l'XML originale, che ha le righe con commessa,
-    # capi e prezzo (in Danea la fattura del fornitore e' registrata con una riga sola). Si cerca, tra le
-    # tabelle legate ai documenti, la colonna binaria che contiene l'XML. Se non c'e' si invia senza.
+    # capi e prezzo (in Danea la fattura del fornitore e' registrata con una riga sola). Si cerca in tutte le
+    # tabelle dell'archivio la colonna binaria che contiene l'XML e il modo di collegarla al documento
+    # (colonna IDDoc, oppure il codice del servizio fatture elettroniche FE_IDAgyo/FE_IDAgyoReg della testata).
     $nFe = 0; $fe = $null; $feInfo = @()
     try {
         $sqlB = 'select trim(rf.RDB$RELATION_NAME), trim(rf.RDB$FIELD_NAME) from RDB$RELATION_FIELDS rf join RDB$FIELDS f on f.RDB$FIELD_NAME = rf.RDB$FIELD_SOURCE ' +
-                'where f.RDB$FIELD_TYPE = 261 and rf.RDB$RELATION_NAME not starting with ''RDB$'' and rf.RDB$RELATION_NAME in ' +
-                '(select r2.RDB$RELATION_NAME from RDB$RELATION_FIELDS r2 where trim(r2.RDB$FIELD_NAME) = ''IDDoc'')'
+                'join RDB$RELATIONS r on r.RDB$RELATION_NAME = rf.RDB$RELATION_NAME where f.RDB$FIELD_TYPE = 261 and coalesce(r.RDB$SYSTEM_FLAG, 0) = 0 and r.RDB$VIEW_BLR is null'
         $cmdB = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($sqlB, $con, $tr)
         $rb = $cmdB.ExecuteReader(); $coppie = @()
         while ($rb.Read()) { $coppie += , @([string]$rb.GetValue(0), [string]$rb.GetValue(1)) }
         $rb.Dispose(); $cmdB.Dispose()
-        $docForn = 'select t."IDDoc" from "TDocTestate" t where t."Data" >= ''2026-01-01'' and t."TipoDoc" in (''U'',''V'',''W'')'
         $lat = [Text.Encoding]::GetEncoding(28591)
-        $scelta = $null
+        $docForn = 'select t."IDDoc" from "TDocTestate" t where t."Data" >= ''2026-01-01'' and t."TipoDoc" in (''U'',''V'',''W'')'
+        $scelta = $null; $sqlScelta = $null
         foreach ($c in $coppie) {
             $trovati = 0; $letti = 0
             try {
-                $cmdP = [FirebirdSql.Data.FirebirdClient.FbCommand]::new('select first 5 x."' + $c[1] + '" from "' + $c[0] + '" x where x."IDDoc" in (' + $docForn + ') and x."' + $c[1] + '" is not null', $con, $tr)
+                $cmdP = [FirebirdSql.Data.FirebirdClient.FbCommand]::new('select first 3 x."' + $c[1] + '" from "' + $c[0] + '" x where x."' + $c[1] + '" is not null', $con, $tr)
+                $cmdP.CommandTimeout = 60
                 $rp = $cmdP.ExecuteReader()
                 while ($rp.Read()) {
                     $v = $rp.GetValue(0); $letti++
@@ -99,24 +100,31 @@ try {
                 }
                 $rp.Dispose(); $cmdP.Dispose()
             } catch { }
-            $feInfo += ($c[0] + '.' + $c[1] + ':' + $letti + '/' + $trovati)
-            if ($trovati -gt 0 -and -not $scelta) { $scelta = $c }
+            if ($trovati -eq 0) { continue }
+            # colonne della tabella che contiene l'XML
+            $sqlK = 'select trim(rf.RDB$FIELD_NAME), f.RDB$FIELD_TYPE from RDB$RELATION_FIELDS rf join RDB$FIELDS f on f.RDB$FIELD_NAME = rf.RDB$FIELD_SOURCE where rf.RDB$RELATION_NAME = ''' + $c[0] + ''' order by rf.RDB$FIELD_POSITION'
+            $cmdK = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($sqlK, $con, $tr)
+            $rk = $cmdK.ExecuteReader(); $cols = @(); while ($rk.Read()) { $cols += , @([string]$rk.GetValue(0), [int]$rk.GetValue(1)) }; $rk.Dispose(); $cmdK.Dispose()
+            $feInfo += ('XML in ' + $c[0] + '.' + $c[1] + ' (' + $trovati + '/' + $letti + '); colonne: ' + (($cols | ForEach-Object { $_[0] }) -join ','))
+            if ($scelta) { continue }
+            # collegamento al documento: IDDoc, oppure una colonna di testo uguale a FE_IDAgyo / FE_IDAgyoReg della testata
+            $prove = @()
+            if ($cols | Where-Object { $_[0] -eq 'IDDoc' }) { $prove += 'x."IDDoc" = t."IDDoc"' }
+            foreach ($k in ($cols | Where-Object { $_[1] -in @(14, 37) })) { foreach ($fk in 'FE_IDAgyoReg', 'FE_IDAgyo') { $prove += ('x."' + $k[0] + '" = t."' + $fk + '"') } }
+            foreach ($cond in $prove) {
+                try {
+                    $q = 'select count(*) from "' + $c[0] + '" x join "TDocTestate" t on ' + $cond + ' where t."IDDoc" in (' + $docForn + ') and x."' + $c[1] + '" is not null'
+                    $cmdC = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($q, $con, $tr); $cmdC.CommandTimeout = 60
+                    $n = [int]$cmdC.ExecuteScalar(); $cmdC.Dispose()
+                    $feInfo += ('  collegamento ' + $cond + ': ' + $n)
+                    if ($n -gt 0) { $scelta = $c; $sqlScelta = 'select t."IDDoc", x."' + $c[1] + '" from "' + $c[0] + '" x join "TDocTestate" t on ' + $cond + ' where t."IDDoc" in (' + $docForn + ') and x."' + $c[1] + '" is not null'; break }
+                } catch { $feInfo += ('  collegamento ' + $cond + ': errore') }
+            }
         }
-        # se l'XML non e' nell'archivio: le colonne FE_ della testata (es. nome o percorso del file) di una fattura fornitore
-        if (-not $scelta) {
-            try {
-                $cmdN = [FirebirdSql.Data.FirebirdClient.FbCommand]::new('select trim(rf.RDB$FIELD_NAME) from RDB$RELATION_FIELDS rf join RDB$FIELDS f on f.RDB$FIELD_NAME = rf.RDB$FIELD_SOURCE where rf.RDB$RELATION_NAME = ''TDocTestate'' and rf.RDB$FIELD_NAME starting with ''FE'' and f.RDB$FIELD_TYPE in (14, 37)', $con, $tr)
-                $rn = $cmdN.ExecuteReader(); $colFe = @(); while ($rn.Read()) { $colFe += [string]$rn.GetValue(0) }; $rn.Dispose(); $cmdN.Dispose()
-                if ($colFe.Count) {
-                    $cmdS = [FirebirdSql.Data.FirebirdClient.FbCommand]::new('select first 1 ' + (($colFe | ForEach-Object { 't."' + $_ + '"' }) -join ',') + ' from "TDocTestate" t where t."Data" >= ''2026-01-01'' and t."TipoDoc" in (''U'',''V'',''W'') order by t."Data" desc', $con, $tr)
-                    $rs = $cmdS.ExecuteReader()
-                    if ($rs.Read()) { for ($i = 0; $i -lt $colFe.Count; $i++) { $feInfo += ($colFe[$i] + '=' + [string]$rs.GetValue($i)) } }
-                    $rs.Dispose(); $cmdS.Dispose()
-                }
-            } catch { $feInfo += ('colonne FE: ' + $_.Exception.Message) }
-        }
-        if ($scelta) {
-            $cmdF = [FirebirdSql.Data.FirebirdClient.FbCommand]::new('select x."IDDoc", x."' + $scelta[1] + '" from "' + $scelta[0] + '" x where x."IDDoc" in (' + $docForn + ') and x."' + $scelta[1] + '" is not null', $con, $tr)
+        if (-not $coppie.Count) { $feInfo += 'nessuna colonna binaria nell''archivio' }
+        elseif (-not ($feInfo | Where-Object { $_ -like 'XML in*' })) { $feInfo += ('nessun XML nelle ' + $coppie.Count + ' colonne binarie: ' + (($coppie | Select-Object -First 40 | ForEach-Object { $_[0] + '.' + $_[1] }) -join ',')) }
+        if ($sqlScelta) {
+            $cmdF = [FirebirdSql.Data.FirebirdClient.FbCommand]::new($sqlScelta, $con, $tr)
             $rf = $cmdF.ExecuteReader(); $sbF = [System.Text.StringBuilder]::new(); [void]$sbF.Append('[')
             while ($rf.Read()) {
                 $v = $rf.GetValue(1)
